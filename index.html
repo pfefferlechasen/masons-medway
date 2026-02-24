@@ -250,6 +250,17 @@
     }
     .hospital-tooltip::before { border-top-color: rgba(10,10,10,0.9) !important; }
 
+    /* Toast */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+      z-index: 3000; padding: 12px 20px; border-radius: 10px;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text-primary); font-size: 13px; font-weight: 500;
+      pointer-events: none; opacity: 0; transition: transform 0.4s, opacity 0.4s;
+      white-space: nowrap;
+    }
+    .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
     @media (min-width: 600px) {
       .dash-cards { grid-template-columns: repeat(4, 1fr); }
       .dash-card.wide { grid-column: auto; }
@@ -368,6 +379,8 @@
     </footer>
   </div>
 
+  <div class="toast" id="toast"></div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
@@ -397,6 +410,99 @@
     let selectedRouteIndex = 0;
     let selectPolylines = [];
     let startName = '', endName = '';
+
+    // ─── SESSION PERSISTENCE ───
+    const SESSION_KEY = 'mm_route_state';
+    const SESSION_MAX_AGE = 12 * 60 * 60 * 1000; // 12 hours
+
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 2500);
+    }
+
+    function saveRouteState() {
+      try {
+        const state = {
+          ts: Date.now(),
+          startName,
+          endName,
+          routePoints,
+          totalRouteDist,
+          hospitals: hospitals.map(h => ({
+            name: h.name, place_id: h.place_id, lat: h.lat, lng: h.lng,
+            rating: h.rating, rating_count: h.rating_count, address: h.address,
+            open_now: h.open_now, phone: h.phone, website: h.website,
+            routeMile: h.routeMile, distFromRoute: h.distFromRoute,
+            city: h.city || null, stateZip: h.stateZip || null,
+          })),
+        };
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+      } catch (e) {
+        console.warn('Failed to save route state:', e);
+      }
+    }
+
+    function clearRouteState() {
+      sessionStorage.removeItem(SESSION_KEY);
+    }
+
+    function tryRestoreRoute() {
+      try {
+        const raw = sessionStorage.getItem(SESSION_KEY);
+        if (!raw) return false;
+        const state = JSON.parse(raw);
+        if (Date.now() - state.ts > SESSION_MAX_AGE) {
+          clearRouteState();
+          return false;
+        }
+        // Restore state
+        startName = state.startName;
+        endName = state.endName;
+        routePoints = state.routePoints;
+        totalRouteDist = state.totalRouteDist;
+        buildRouteSegments();
+
+        // Hide entry, show tracking
+        document.getElementById('entry-screen').style.display = 'none';
+        document.getElementById('tracking-view').style.display = 'block';
+        document.getElementById('navbar').style.display = 'flex';
+        document.getElementById('btn-change-route').style.display = 'block';
+        document.getElementById('nav-route').textContent = `${startName} → ${endName}`;
+        document.getElementById('hero-route-label').textContent = `${startName} → ${endName}`;
+        document.getElementById('footer-info').textContent = `${state.hospitals.length} hospitals · ${Math.round(totalRouteDist)} mi route`;
+
+        // Init map in now-visible container
+        initMap();
+        setTimeout(() => {
+          map.invalidateSize();
+          drawRoute(routePoints);
+
+          // Restore hospitals and markers
+          hospitals = state.hospitals;
+          hospitals.forEach(h => {
+            const marker = L.marker([h.lat, h.lng], {
+              icon: createMarkerIcon('#5DAE72', 6)
+            }).addTo(map);
+            marker.bindTooltip(h.name, { direction: 'top', className: 'hospital-tooltip' });
+            h.marker = marker;
+            hospitalMarkers.push(marker);
+          });
+
+          startGpsTracking();
+          initAnimations();
+          updateView();
+          showToast('Route restored');
+        }, 200);
+
+        return true;
+      } catch (e) {
+        console.warn('Failed to restore route state:', e);
+        clearRouteState();
+        return false;
+      }
+    }
 
     // ─── API KEY MANAGEMENT ───
     function promptApiKey(e) {
@@ -518,6 +624,7 @@
     // ─── ENTRY SCREEN ───
     function showEntryScreen() {
       if (gpsWatchId) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
+      clearRouteState();
       document.getElementById('entry-screen').style.display = 'flex';
       document.getElementById('tracking-view').style.display = 'none';
       document.getElementById('loading-overlay').style.display = 'none';
@@ -752,6 +859,9 @@
         overlay.style.display = 'none';
         document.getElementById('footer-info').textContent = `${hospitals.length} hospitals · ${Math.round(totalRouteDist)} mi route`;
 
+        // Save state for refresh persistence
+        saveRouteState();
+
         // Start GPS tracking
         startGpsTracking();
         initAnimations();
@@ -895,6 +1005,7 @@
         }
         await new Promise(r => setTimeout(r, 100));
       }
+      saveRouteState(); // update with loaded details
       updateView();
     }
 
@@ -1126,11 +1237,17 @@
     });
 
     // ─── INIT ───
-    // Entry animations
-    gsap.from('.entry-logo', { y: 20, opacity: 0, duration: 0.6, ease: 'power2.out', delay: 0.1 });
-    gsap.from('.entry-title', { y: 30, opacity: 0, duration: 0.7, ease: 'power2.out', delay: 0.2 });
-    gsap.from('.entry-sub', { y: 20, opacity: 0, duration: 0.6, ease: 'power2.out', delay: 0.35 });
-    gsap.from('.entry-form', { y: 30, opacity: 0, duration: 0.7, ease: 'power2.out', delay: 0.45 });
+    // Try to restore a saved route first
+    const didRestore = tryRestoreRoute();
+
+    if (!didRestore) {
+      // Entry animations only if showing entry screen
+      gsap.from('.entry-logo', { y: 20, opacity: 0, duration: 0.6, ease: 'power2.out', delay: 0.1 });
+      gsap.from('.entry-title', { y: 30, opacity: 0, duration: 0.7, ease: 'power2.out', delay: 0.2 });
+      gsap.from('.entry-sub', { y: 20, opacity: 0, duration: 0.6, ease: 'power2.out', delay: 0.35 });
+      gsap.from('.entry-form', { y: 30, opacity: 0, duration: 0.7, ease: 'power2.out', delay: 0.45 });
+    }
+
     // Auto-fetch API key from serverless function, fall back to localStorage
     (async function initApiKey() {
       try {
@@ -1148,8 +1265,6 @@
       }
       if (API_KEY) loadGoogleMaps().catch(() => {});
     })();
-
-    // Map is initialized lazily in startRoute() when tracking view is first shown
   </script>
 </body>
 </html>
