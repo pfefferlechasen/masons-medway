@@ -208,7 +208,8 @@
     .actions { display: flex; gap: 10px; }
     .btn {
       flex: 1; padding: 14px; border-radius: 10px; text-align: center; text-decoration: none;
-      font-size: 14px; font-weight: 500; transition: all 0.2s; display: block; border: none; cursor: pointer; font-family: inherit;
+      font-size: 14px; font-weight: 500; transition: all 0.2s; display: flex; align-items: center; justify-content: center;
+      min-height: 48px; border: none; cursor: pointer; font-family: inherit; -webkit-tap-highlight-color: transparent;
     }
     .btn-primary { background: var(--text-primary); color: var(--bg); }
     .btn-primary:hover { background: #fff; transform: translateY(-2px); }
@@ -1184,8 +1185,11 @@
 
         const cityState = h.city && h.stateZip ? `${h.city}, ${h.stateZip}` : (h.address || '');
         const phoneBtn = h.phone
-          ? `<a href="tel:${h.phone}" class="btn btn-secondary">Call</a>`
-          : `<a class="btn btn-secondary" style="opacity:0.4;pointer-events:none">Call</a>`;
+          ? `<a href="tel:${h.phone}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">Call</a>`
+          : `<a class="btn btn-secondary" style="opacity:0.4;pointer-events:none" aria-disabled="true">Call</a>`;
+
+        const originParam = userLat ? `&origin=${userLat},${userLng}` : '';
+        const directionsUrl = `https://www.google.com/maps/dir/?api=1${originParam}&destination=${h.lat},${h.lng}&travelmode=driving`;
 
         const card = document.createElement('div');
         card.className = 'h-card' + (isPassed ? ' passed' : '');
@@ -1204,7 +1208,7 @@
             </div>
           </div>
           <div class="actions">
-            <a href="https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lng}&travelmode=driving" target="_blank" class="btn btn-primary">Directions</a>
+            <a href="${directionsUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Directions</a>
             ${phoneBtn}
           </div>
         `;
