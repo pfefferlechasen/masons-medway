@@ -88,8 +88,6 @@
     .btn-find:hover { filter: brightness(1.1); transform: translateY(-2px); }
     .btn-find:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
     .entry-error { color: var(--danger); font-size: 13px; margin-top: 8px; display: none; }
-    .api-note { font-size: 12px; color: var(--text-muted); margin-top: 24px; max-width: 400px; line-height: 1.5; }
-    .api-note a { color: var(--accent); text-decoration: none; }
 
     /* --- LOADING OVERLAY --- */
     #loading-overlay {
@@ -234,7 +232,6 @@
       <button type="submit" class="btn-find" id="btn-find">Find Hospitals</button>
       <div class="entry-error" id="entry-error"></div>
     </form>
-    <p class="api-note">Requires a Google Maps API key. <a href="#" onclick="promptApiKey(event)">Set API key</a></p>
   </div>
 
   <!-- LOADING OVERLAY -->
@@ -900,10 +897,23 @@
     gsap.from('.entry-title', { y: 30, opacity: 0, duration: 0.7, ease: 'power2.out', delay: 0.2 });
     gsap.from('.entry-sub', { y: 20, opacity: 0, duration: 0.6, ease: 'power2.out', delay: 0.35 });
     gsap.from('.entry-form', { y: 30, opacity: 0, duration: 0.7, ease: 'power2.out', delay: 0.45 });
-    gsap.from('.api-note', { opacity: 0, duration: 0.5, delay: 0.6 });
-
-    // Pre-load Google Maps if key exists
-    if (API_KEY) loadGoogleMaps().catch(() => {});
+    // Auto-fetch API key from serverless function, fall back to localStorage
+    (async function initApiKey() {
+      try {
+        const res = await fetch('/api/config');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.key) {
+            API_KEY = data.key;
+            loadGoogleMaps().catch(() => {});
+            return;
+          }
+        }
+      } catch (e) {
+        // Serverless function unavailable (local dev) — fall back to localStorage
+      }
+      if (API_KEY) loadGoogleMaps().catch(() => {});
+    })();
 
     // Init Leaflet map early (hidden)
     initMap();
