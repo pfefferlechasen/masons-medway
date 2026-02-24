@@ -99,6 +99,51 @@
     .loading-bar-fill { width: 0%; height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
     .loading-sub { font-size: 13px; color: var(--text-muted); }
 
+    /* --- ROUTE SELECTION --- */
+    #route-select { display: none; position: fixed; inset: 0; z-index: 1500; background: var(--bg); }
+    #route-select-map { width: 100%; height: 60%; }
+    .route-select-panel {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 40%;
+      background: var(--bg); border-top: 1px solid var(--border);
+      padding: 20px; overflow-y: auto;
+    }
+    .route-select-label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 2px;
+      color: var(--text-muted); font-weight: 600; margin-bottom: 16px;
+    }
+    .route-options { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+    .route-option {
+      display: flex; align-items: center; gap: 14px; padding: 16px;
+      background: var(--surface); border: 2px solid var(--border); border-radius: 12px;
+      cursor: pointer; transition: all 0.2s; font-family: inherit;
+      color: var(--text-secondary); text-align: left; width: 100%;
+    }
+    .route-option:hover { background: var(--surface-hover); }
+    .route-option.selected { border-color: var(--accent); background: rgba(200,217,111,0.06); }
+    .route-option .ro-index {
+      width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700; flex-shrink: 0;
+      background: var(--border); color: var(--text-muted); transition: all 0.2s;
+    }
+    .route-option.selected .ro-index { background: var(--accent); color: var(--bg); }
+    .route-option .ro-details { flex: 1; }
+    .route-option .ro-duration { font-size: 16px; color: var(--text-primary); font-weight: 600; }
+    .route-option .ro-meta { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+    .route-option .ro-via { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    .btn-use-route {
+      width: 100%; padding: 16px; background: var(--accent); color: var(--bg); font-size: 15px;
+      font-weight: 600; border: none; border-radius: 12px; cursor: pointer; font-family: inherit;
+      transition: all 0.2s;
+    }
+    .btn-use-route:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    .route-select-back {
+      position: absolute; top: 16px; left: 16px; z-index: 10;
+      background: rgba(10,10,10,0.8); backdrop-filter: blur(8px); border: 1px solid var(--border);
+      color: var(--text-primary); padding: 8px 14px; border-radius: 8px; font-size: 13px;
+      cursor: pointer; font-family: inherit; transition: all 0.2s;
+    }
+    .route-select-back:hover { background: var(--surface-hover); }
+
     /* --- TRACKING VIEW --- */
     #tracking-view { display: none; }
 
@@ -252,6 +297,17 @@
     <div class="loading-sub" id="loading-sub"></div>
   </div>
 
+  <!-- ROUTE SELECTION -->
+  <div id="route-select">
+    <button class="route-select-back" onclick="showEntryScreen()">Back</button>
+    <div id="route-select-map"></div>
+    <div class="route-select-panel">
+      <div class="route-select-label">Choose a route</div>
+      <div class="route-options" id="route-options"></div>
+      <button class="btn-use-route" id="btn-use-route" onclick="confirmRoute()">Use this route</button>
+    </div>
+  </div>
+
   <!-- TRACKING VIEW -->
   <div id="tracking-view">
     <div id="hero">
@@ -334,6 +390,13 @@
     let lastReverseGeocode = 0;
     let googleLoaded = false;
     let placesService = null;
+
+    // Route selection state
+    let selectMap = null;
+    let allRoutes = [];
+    let selectedRouteIndex = 0;
+    let selectPolylines = [];
+    let startName = '', endName = '';
 
     // ─── API KEY MANAGEMENT ───
     function promptApiKey(e) {
@@ -458,6 +521,7 @@
       document.getElementById('entry-screen').style.display = 'flex';
       document.getElementById('tracking-view').style.display = 'none';
       document.getElementById('loading-overlay').style.display = 'none';
+      document.getElementById('route-select').style.display = 'none';
       document.getElementById('navbar').style.display = 'none';
       // Clean up all map layers and state
       hospitalMarkers.forEach(m => map && map.removeLayer(m));
@@ -466,6 +530,9 @@
       if (routeLine && map) { map.removeLayer(routeLine); routeLine = null; }
       if (routeGlow && map) { map.removeLayer(routeGlow); routeGlow = null; }
       if (userMarker && map) { map.removeLayer(userMarker); userMarker = null; }
+      selectPolylines.forEach(p => selectMap && selectMap.removeLayer(p));
+      selectPolylines = [];
+      allRoutes = [];
       routePoints = [];
       routeSegments = [];
       totalRouteDist = 0;
@@ -486,7 +553,7 @@
       }, { enableHighAccuracy: true });
     }
 
-    // ─── START ROUTE ───
+    // ─── START ROUTE (Phase 1: get directions, show route picker) ───
     async function startRoute(e) {
       e.preventDefault();
       const startAddr = document.getElementById('input-start').value.trim();
@@ -508,41 +575,169 @@
         document.getElementById('entry-screen').style.display = 'none';
         const overlay = document.getElementById('loading-overlay');
         overlay.style.display = 'flex';
-        setLoading('Calculating route...', 10, '');
+        setLoading('Calculating routes...', 10, '');
 
-        // Get directions
+        // Get directions with alternatives
         const directionsService = new google.maps.DirectionsService();
         const result = await new Promise((resolve, reject) => {
           directionsService.route({
             origin: startAddr,
             destination: endAddr,
-            travelMode: 'DRIVING'
+            travelMode: 'DRIVING',
+            provideRouteAlternatives: true
           }, (res, status) => {
             if (status === 'OK') resolve(res);
             else reject(new Error('Could not find route: ' + status));
           });
         });
 
-        setLoading('Processing route...', 30, '');
+        // Parse all routes
+        allRoutes = result.routes.map((route, i) => {
+          const legs = route.legs;
+          const totalDist = legs.reduce((sum, l) => sum + l.distance.value, 0);
+          const totalDur = legs.reduce((sum, l) => sum + l.duration.value, 0);
+          const points = route.overview_path.map(p => ({ lat: p.lat(), lng: p.lng() }));
+          // Extract "via" hint from summary
+          const via = route.summary || '';
+          return { points, totalDist, totalDur, via, legs };
+        });
 
-        // Extract route points
-        const path = result.routes[0].overview_path;
-        routePoints = path.map(p => ({ lat: p.lat(), lng: p.lng() }));
+        // Get readable start/end names from first route
+        const legs0 = allRoutes[0].legs;
+        startName = legs0[0].start_address.split(',').slice(0,2).join(',');
+        endName = legs0[legs0.length-1].end_address.split(',').slice(0,2).join(',');
+
+        selectedRouteIndex = 0;
+        overlay.style.display = 'none';
+
+        // If only one route, skip selection and go straight to tracking
+        if (allRoutes.length === 1) {
+          await beginTracking();
+        } else {
+          showRouteSelection();
+        }
+
+      } catch (err) {
+        document.getElementById('loading-overlay').style.display = 'none';
+        document.getElementById('entry-screen').style.display = 'flex';
+        errEl.textContent = err.message || 'Something went wrong. Check your API key.';
+        errEl.style.display = 'block';
+      } finally {
+        document.getElementById('btn-find').disabled = false;
+        document.getElementById('btn-find').textContent = 'Find Hospitals';
+      }
+    }
+
+    // ─── ROUTE SELECTION ───
+    function showRouteSelection() {
+      document.getElementById('route-select').style.display = 'block';
+
+      // Init selection map
+      if (!selectMap) {
+        selectMap = L.map('route-select-map', { zoomControl: false }).setView([39.5, -84.5], 5);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+          maxZoom: 19, attribution: '&copy; CartoDB'
+        }).addTo(selectMap);
+      }
+      setTimeout(() => selectMap.invalidateSize(), 100);
+
+      // Draw all routes and build option cards
+      drawSelectionRoutes();
+      buildRouteOptionCards();
+    }
+
+    function drawSelectionRoutes() {
+      // Clear previous
+      selectPolylines.forEach(p => selectMap.removeLayer(p));
+      selectPolylines = [];
+
+      // Draw unselected routes first (behind), then selected on top
+      allRoutes.forEach((route, i) => {
+        if (i === selectedRouteIndex) return;
+        const coords = route.points.map(p => [p.lat, p.lng]);
+        const poly = L.polyline(coords, {
+          color: '#4A4A45', weight: 4, opacity: 0.5, className: 'route-alt'
+        }).addTo(selectMap);
+        poly.on('click', () => selectRoute(i));
+        selectPolylines.push(poly);
+      });
+
+      // Selected route on top
+      const selected = allRoutes[selectedRouteIndex];
+      const coords = selected.points.map(p => [p.lat, p.lng]);
+      const glow = L.polyline(coords, { color: '#C8D96F', weight: 12, opacity: 0.15 }).addTo(selectMap);
+      const main = L.polyline(coords, { color: '#C8D96F', weight: 5, opacity: 0.8 }).addTo(selectMap);
+      selectPolylines.push(glow, main);
+
+      // Fit bounds to show all routes
+      const allCoords = allRoutes.flatMap(r => r.points.map(p => [p.lat, p.lng]));
+      if (allCoords.length > 0) {
+        selectMap.fitBounds(allCoords, { padding: [40, 40], maxZoom: 12 });
+      }
+    }
+
+    function buildRouteOptionCards() {
+      const container = document.getElementById('route-options');
+      container.innerHTML = '';
+
+      allRoutes.forEach((route, i) => {
+        const hrs = Math.floor(route.totalDur / 3600);
+        const mins = Math.round((route.totalDur % 3600) / 60);
+        const durText = hrs > 0 ? `${hrs} hr ${mins} min` : `${mins} min`;
+        const distMi = (route.totalDist / 1609.34).toFixed(0);
+
+        const btn = document.createElement('button');
+        btn.className = 'route-option' + (i === selectedRouteIndex ? ' selected' : '');
+        btn.innerHTML = `
+          <div class="ro-index">${String.fromCharCode(65 + i)}</div>
+          <div class="ro-details">
+            <div class="ro-duration">${durText}</div>
+            <div class="ro-meta">${distMi} miles</div>
+            ${route.via ? `<div class="ro-via">via ${route.via}</div>` : ''}
+          </div>
+        `;
+        btn.onclick = () => selectRoute(i);
+        container.appendChild(btn);
+      });
+    }
+
+    function selectRoute(index) {
+      selectedRouteIndex = index;
+      drawSelectionRoutes();
+      buildRouteOptionCards();
+    }
+
+    async function confirmRoute() {
+      document.getElementById('route-select').style.display = 'none';
+
+      const overlay = document.getElementById('loading-overlay');
+      overlay.style.display = 'flex';
+      setLoading('Finding hospitals along your route...', 40, '');
+
+      await beginTracking();
+    }
+
+    // ─── BEGIN TRACKING (Phase 2: use selected route, find hospitals) ───
+    async function beginTracking() {
+      const overlay = document.getElementById('loading-overlay');
+      if (overlay.style.display !== 'flex') {
+        overlay.style.display = 'flex';
+        setLoading('Finding hospitals along your route...', 40, '');
+      }
+
+      try {
+        const selected = allRoutes[selectedRouteIndex];
+        routePoints = selected.points;
         buildRouteSegments();
 
-        // Get readable names
-        const legs = result.routes[0].legs;
-        const startName = legs[0].start_address.split(',').slice(0,2).join(',');
-        const endName = legs[legs.length-1].end_address.split(',').slice(0,2).join(',');
-
-        // Show tracking view first so the map container has dimensions
+        // Show tracking view
         document.getElementById('tracking-view').style.display = 'block';
         document.getElementById('navbar').style.display = 'flex';
         document.getElementById('btn-change-route').style.display = 'block';
         document.getElementById('nav-route').textContent = `${startName} → ${endName}`;
         document.getElementById('hero-route-label').textContent = `${startName} → ${endName}`;
 
-        // Init map after container is visible, then draw route
+        // Init main map after container is visible
         if (!map) {
           initMap();
         } else {
@@ -550,8 +745,7 @@
         }
         setTimeout(() => { map.invalidateSize(); drawRoute(routePoints); }, 150);
 
-        // Sample points along route for hospital search
-        setLoading('Finding hospitals along your route...', 40, '');
+        // Find hospitals
         await findHospitalsAlongRoute();
 
         // Done loading
@@ -564,13 +758,11 @@
         updateView();
 
       } catch (err) {
-        document.getElementById('loading-overlay').style.display = 'none';
+        overlay.style.display = 'none';
         document.getElementById('entry-screen').style.display = 'flex';
-        errEl.textContent = err.message || 'Something went wrong. Check your API key.';
+        const errEl = document.getElementById('entry-error');
+        errEl.textContent = err.message || 'Something went wrong.';
         errEl.style.display = 'block';
-      } finally {
-        document.getElementById('btn-find').disabled = false;
-        document.getElementById('btn-find').textContent = 'Find Hospitals';
       }
     }
 
