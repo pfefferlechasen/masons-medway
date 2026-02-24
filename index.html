@@ -346,16 +346,19 @@
       }
     }
 
+    let _gmPromise = null;
     function loadGoogleMaps() {
-      if (googleLoaded || !API_KEY) return;
-      return new Promise((resolve, reject) => {
+      if (googleLoaded || !API_KEY) return Promise.resolve();
+      if (_gmPromise) return _gmPromise;
+      _gmPromise = new Promise((resolve, reject) => {
         window._gmResolve = () => { googleLoaded = true; resolve(); };
         const s = document.createElement('script');
         s.src = `https://maps.googleapis.com/maps/api/js?key=${API_KEY}&libraries=places&callback=_gmResolve`;
         s.async = true; s.defer = true;
-        s.onerror = () => reject(new Error('Failed to load Google Maps'));
+        s.onerror = () => { _gmPromise = null; reject(new Error('Failed to load Google Maps')); };
         document.head.appendChild(s);
       });
+      return _gmPromise;
     }
 
     // ─── HAVERSINE ───
@@ -456,9 +459,18 @@
       document.getElementById('tracking-view').style.display = 'none';
       document.getElementById('loading-overlay').style.display = 'none';
       document.getElementById('navbar').style.display = 'none';
+      // Clean up all map layers and state
       hospitalMarkers.forEach(m => map && map.removeLayer(m));
       hospitalMarkers = [];
       hospitals = [];
+      if (routeLine && map) { map.removeLayer(routeLine); routeLine = null; }
+      if (routeGlow && map) { map.removeLayer(routeGlow); routeGlow = null; }
+      if (userMarker && map) { map.removeLayer(userMarker); userMarker = null; }
+      routePoints = [];
+      routeSegments = [];
+      totalRouteDist = 0;
+      userProgress = null;
+      gpsDenied = false;
     }
 
     function useMyLocation() {
@@ -523,16 +535,20 @@
         const startName = legs[0].start_address.split(',').slice(0,2).join(',');
         const endName = legs[legs.length-1].end_address.split(',').slice(0,2).join(',');
 
-        // Show tracking view and draw route
-        if (!map) initMap();
+        // Show tracking view first so the map container has dimensions
         document.getElementById('tracking-view').style.display = 'block';
         document.getElementById('navbar').style.display = 'flex';
         document.getElementById('btn-change-route').style.display = 'block';
         document.getElementById('nav-route').textContent = `${startName} → ${endName}`;
         document.getElementById('hero-route-label').textContent = `${startName} → ${endName}`;
 
-        // Invalidate map size after showing tracking view, then draw + fit bounds
-        setTimeout(() => { map.invalidateSize(); drawRoute(routePoints); }, 200);
+        // Init map after container is visible, then draw route
+        if (!map) {
+          initMap();
+        } else {
+          map.invalidateSize();
+        }
+        setTimeout(() => { map.invalidateSize(); drawRoute(routePoints); }, 150);
 
         // Sample points along route for hospital search
         setLoading('Finding hospitals along your route...', 40, '');
@@ -581,12 +597,15 @@
       }
       if (samplePoints.length < 2) samplePoints.push(routePoints[routePoints.length - 1]);
 
-      // Create a temporary hidden map div for PlacesService
-      const tempDiv = document.createElement('div');
-      tempDiv.style.display = 'none';
-      document.body.appendChild(tempDiv);
-      const tempMap = new google.maps.Map(tempDiv);
-      placesService = new google.maps.places.PlacesService(tempMap);
+      // Create a persistent hidden map div for PlacesService (reused across detail loads)
+      if (!placesService) {
+        const tempDiv = document.createElement('div');
+        tempDiv.id = 'places-service-div';
+        tempDiv.style.cssText = 'width:1px;height:1px;position:absolute;left:-9999px;';
+        document.body.appendChild(tempDiv);
+        const tempMap = new google.maps.Map(tempDiv);
+        placesService = new google.maps.places.PlacesService(tempMap);
+      }
 
       const seen = new Set();
       let searched = 0;
@@ -613,7 +632,7 @@
               rating: place.rating || 0,
               rating_count: place.user_ratings_total || 0,
               address: place.vicinity || '',
-              open_now: place.opening_hours?.isOpen?.() ?? null,
+              open_now: place.opening_hours?.open_now ?? null,
               phone: null,
               website: null,
             };
@@ -649,8 +668,6 @@
 
       // Lazy load details for first 30
       loadHospitalDetails(hospitals.slice(0, 30));
-
-      document.body.removeChild(tempDiv);
     }
 
     function nearbySearch(lat, lng) {
@@ -940,8 +957,7 @@
       if (API_KEY) loadGoogleMaps().catch(() => {});
     })();
 
-    // Init Leaflet map early (hidden)
-    initMap();
+    // Map is initialized lazily in startRoute() when tracking view is first shown
   </script>
 </body>
 </html>
